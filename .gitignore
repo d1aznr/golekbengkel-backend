@@ -1,0 +1,19 @@
+# Virtual environment
+.venv/
+venv/
+__pycache__/
+
+# Data files (large)
+data/*.tif
+data/*.pkl
+data/*.geojson
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
