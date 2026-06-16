@@ -1,15 +1,12 @@
 """Request/Response schemas for API validation."""
-from typing import List, Optional
-
+from typing import Dict, List, Optional
 from pydantic import BaseModel, Field, field_validator
 
 
 class RouteRequest(BaseModel):
     """Data Transfer Object (DTO) for the POST /route endpoint.
-    
+
     Validates the structure and geometric bounds of incoming routing requests.
-    Strict validation at the API boundary prevents processing errors deeper 
-    in the routing engine.
     """
 
     start: List[float] = Field(
@@ -27,9 +24,27 @@ class RouteRequest(BaseModel):
         examples=[[-6.95, 112.05]],
     )
     lambda_value: Optional[float] = Field(
-        0.0,
+        None,
         alias="lambda",
-        description="Uphill penalty factor (dynamic float value from UI slider)",
+        description="Uphill penalty factor (for backward compatibility)",
+    )
+    mode: Optional[str] = Field(
+        "time",
+        description="Routing weight mode: 'time' (travel time) or 'distance' (shortest path)",
+    )
+    model_type: Optional[str] = Field(
+        "glm",
+        alias="model",
+        description="Velocity model: 'glm' (default), 'tobler', or 'naismith'",
+    )
+    ignore_downhill: Optional[bool] = Field(
+        False,
+        description="Whether to ignore the constant 5km/h downhill speed rule",
+    )
+    slope_multiplier: Optional[float] = Field(
+        None,
+        alias="slope_multiplier",
+        description="Slope elevation multiplier (e.g. 3.0 for pushing motorbike)",
     )
 
     @field_validator("start", "end")
@@ -56,7 +71,13 @@ class RouteResponse(BaseModel):
     path: List[List[float]] = Field(..., description="List of [lat, lon] waypoints")
     distance: float = Field(..., description="Total distance in meters")
     elevation_gain: float = Field(..., description="Total uphill elevation gain in meters")
-    lambda_value: float = Field(..., description="Lambda value used")
+    travel_time: float = Field(..., description="Estimated travel time in seconds")
+    slope_characteristics: Dict = Field(..., description="Slope statistics of the path")
+    mode: str = Field(..., description="Routing mode used ('time' or 'distance')")
+    model_type: str = Field(..., description="Velocity model used")
+    ignore_downhill: bool = Field(..., description="Whether downhill speed override was ignored")
+    slope_multiplier: float = Field(..., description="Slope multiplier used")
+    lambda_value: float = Field(..., description="Lambda value or equivalent fallback")
     node_count: int = Field(..., description="Number of nodes in path")
 
 
@@ -74,5 +95,3 @@ class GraphInfoResponse(BaseModel):
     node_count: int = Field(..., description="Number of nodes")
     edge_count: int = Field(..., description="Number of edges")
     is_directed: bool = Field(..., description="Whether graph is directed")
-
-

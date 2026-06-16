@@ -19,12 +19,13 @@ than traveling downhill from B to A.
 import pickle
 from pathlib import Path
 from typing import Dict, List, Tuple
+import math
 
 import geopandas as gpd
 import networkx as nx
 from shapely.geometry import LineString
 
-from .elevation import load_demnas, batch_sample_elevation
+from .elevation import load_demnas, batch_sample_elevation, calculate_terrain_slope
 from .slope import calculate_slope
 
 
@@ -47,14 +48,14 @@ def load_geojson(geojson_path: str) -> gpd.GeoDataFrame:
 
 def extract_nodes_and_edges(
     gdf: gpd.GeoDataFrame,
-) -> Tuple[List[Tuple[float, float]], List[Tuple[int, int]]]:
-    """Extract unique nodes and edges from road LineStrings.
+) -> Tuple[List[Tuple[float, float]], List[Tuple[int, int, Dict]]]:
+    """Extract unique nodes and edges from road LineStrings with attributes.
 
     Args:
         gdf: GeoDataFrame with road geometries
 
     Returns:
-        Tuple of (list of (lat, lon) nodes, list of (u_idx, v_idx) edges)
+        Tuple of (list of (lat, lon) nodes, list of (u_idx, v_idx, attributes) edges)
     """
     # 1. Identify unique nodes
     # Collect all unique coordinates to serve as graph nodes
@@ -75,9 +76,14 @@ def extract_nodes_and_edges(
                 nodes.append(key)
 
     # 2. Construct edges
-    # Build bidirectional edges between consecutive nodes in each LineString.
-    edges: List[Tuple[int, int]] = []
-    for geom in gdf.geometry:
+    # Build bidirectional edges between consecutive nodes in each LineString, passing OSM tags.
+    edges: List[Tuple[int, int, Dict]] = []
+    
+    # Extract columns if present
+    highway_list = gdf['highway'].tolist() if 'highway' in gdf.columns else [None] * len(gdf)
+    surface_list = gdf['surface'].tolist() if 'surface' in gdf.columns else [None] * len(gdf)
+
+    for geom, highway, surface in zip(gdf.geometry, highway_list, surface_list):
         if not isinstance(geom, LineString):
             continue
 
@@ -92,26 +98,31 @@ def extract_nodes_and_edges(
             u = coord_to_idx[key1]
             v = coord_to_idx[key2]
 
+            attrs = {
+                "highway": highway,
+                "surface": surface
+            }
+
             # Add both directions explicitly. Although physical roads may be 
             # bidirectional, the directed graph is required to model the 
             # asymmetric slope penalty (uphill vs. downhill).
-            edges.append((u, v))
-            edges.append((v, u))
+            edges.append((u, v, attrs))
+            edges.append((v, u, attrs))
 
     return nodes, edges
 
 
 def build_graph(
     nodes: List[Tuple[float, float]],
-    edges: List[Tuple[int, int]],
+    edges: List[Tuple[int, int, Dict]],
     raster_data,
     transform,
 ) -> nx.DiGraph:
-    """Build weighted directed graph with elevation and slope attributes.
+    """Build weighted directed graph with elevation, slope, and road type attributes.
 
     Args:
         nodes: List of (lat, lon) coordinates
-        edges: List of (u_idx, v_idx) node index pairs
+        edges: List of (u_idx, v_idx, attributes) tuples
         raster_data: DEMNAS raster data
         transform: Rasterio transform
 
@@ -125,12 +136,17 @@ def build_graph(
         G.add_node(i, lat=lat, lon=lon)
 
     # Sample elevations for all nodes
-    # GeoJSON coords are (lon, lat) → convert for rasterio sampling
     coords_for_sampling = [(lon, lat) for lat, lon in nodes]
     elevations = batch_sample_elevation(raster_data, transform, coords_for_sampling)
 
-    # Add directed edges with distance, elevation, and slope attributes
-    for u, v in edges:
+    # Compute terrain slope for all nodes (always in degrees)
+    print("Computing terrain slope for all nodes...")
+    node_terrain_slopes = {}
+    for i, (lat, lon) in enumerate(nodes):
+        node_terrain_slopes[i] = calculate_terrain_slope(raster_data, transform, lon, lat)
+
+    # Add directed edges with distance, elevation, slope, and road type attributes
+    for u, v, attrs in edges:
         lat_u, lon_u = nodes[u]
         lat_v, lon_v = nodes[v]
 
@@ -147,12 +163,46 @@ def build_graph(
             lat_v, lon_v, elev_v,
         )
 
+        # Calculate walking slope angle in degrees (signed)
+        if distance > 0:
+            walking_slope_ratio = (elev_v - elev_u) / distance
+            walking_slope_deg = math.degrees(math.atan(walking_slope_ratio))
+        else:
+            walking_slope_deg = 0.0
+
+        # Calculate hill slope angle (average of the terrain slopes of endpoints)
+        hill_slope_deg = (node_terrain_slopes[u] + node_terrain_slopes[v]) / 2.0
+
+        # Determine road type: paved_road vs unpaved_road
+        highway_val = attrs.get("highway")
+        surface_val = attrs.get("surface")
+
+        is_paved = True
+        if isinstance(surface_val, str) and surface_val.strip().lower() != "":
+            s_lower = surface_val.strip().lower()
+            if s_lower in ['unpaved', 'ground', 'sand', 'gravel', 'fine_gravel', 'clay', 'grass', 'dirt', 'earth']:
+                is_paved = False
+            elif s_lower in ['asphalt', 'paved', 'paving_stones', 'concrete']:
+                is_paved = True
+        else:
+            if isinstance(highway_val, str):
+                h_lower = highway_val.strip().lower()
+                if h_lower in ['path', 'track', 'bridleway', 'steps', 'footway']:
+                    is_paved = False
+
+        road_type = "paved_road" if is_paved else "unpaved_road"
+
         G.add_edge(u, v,
                    distance=distance,
                    elevation_u=elev_u,
                    elevation_v=elev_v,
                    slope_positive=slope_positive,
-                   slope_negative=slope_negative)
+                   slope_negative=slope_negative,
+                   walking_slope_deg=walking_slope_deg,
+                   hill_slope_deg=hill_slope_deg,
+                   highway=highway_val,
+                   surface=surface_val,
+                   road_type=road_type)
 
     return G
 
