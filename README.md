@@ -4,35 +4,71 @@ Backend API untuk pencarian rute bengkel terdekat di Kabupaten Tuban dengan memp
 
 ## Fitur Utama
 
-- **Directed Weighted Graph** — Pemodelan graf berarah dengan atribut jalan dari OSM (highway, surface) dan elevasi DEMNAS.
-- **Terrain-Aware Travel Time** — Edge cost berupa waktu tempuh aktual (`T = d / (v_eff / 3.6)`) dengan tiga model kecepatan: GLM, Tobler, Naismith.
-- **Slope Multiplier** — Skalar kemiringan untuk memodelkan kesulitan medan (misalnya mendorong motor), dengan default `3.0`.
-- **DEMNAS Integration** — Data elevasi resolusi tinggi (~8 meter) dari DEM Nasional, termasuk perhitungan terrain slope menggunakan Horn's method.
-- **Road Type Classification** — OSM `highway` dan `surface` tags diklasifikasikan menjadi `paved_road` / `unpaved_road` untuk model GLM.
-- **Spatial Indexing** — Pencarian node terdekat menggunakan SciPy KDTree untuk performa O(log N).
-- **Swagger Documentation** — Dokumentasi API interaktif di `/apidocs`.
+* **Directed Weighted Graph** — Pemodelan graf berarah dengan atribut jalan dari OSM (`highway`, `surface`) dan elevasi DEMNAS.
+* **Terrain-Aware Travel Time** — Edge cost berupa waktu tempuh aktual berdasarkan model kecepatan berbasis medan.
+* **Slope Multiplier** — Skalar kemiringan untuk memodelkan kesulitan medan (misalnya mendorong motor), dengan nilai default `3.0`.
+* **DEMNAS Integration** — Data elevasi resolusi tinggi (~8 meter) dari DEM Nasional, termasuk perhitungan terrain slope menggunakan Horn's Method.
+* **Road Type Classification** — Tag OSM `highway` dan `surface` diklasifikasikan menjadi `paved_road` atau `unpaved_road` untuk model GLM.
+* **Spatial Indexing** — Pencarian node terdekat menggunakan SciPy KDTree dengan kompleksitas rata-rata `O(log N)`.
+* **Swagger Documentation** — Dokumentasi API interaktif tersedia di `/apidocs`.
+
+### Travel Time Cost
+
+```text
+T = d / (v_eff / 3.6)
+```
+
+Keterangan:
+
+* `T` = waktu tempuh (detik)
+* `d` = panjang edge (meter)
+* `v_eff` = kecepatan efektif (km/jam)
 
 ## Velocity Models
 
-| Model | Formula | Source |
-|-------|---------|--------|
-| **GLM** | `v = exp(a + b·φ_eff + c·θ_eff + d·θ_eff²)` | Wood et al., 2023 |
-| **Tobler** | `v = 6 · exp(-3.5 · |s_eff + 0.05|)` | Classic hiking function |
-| **Naismith** | `v = 5 · d / (d + 8.333 · max(0, Δh_eff))` | Rule of thumb |
+### GLM (Wood et al., 2023)
 
-Semua model menggunakan slope multiplier untuk menskalakan input kemiringan:
-- θ_eff = arctan(k · tan(θ))
-- s_eff = k · s
-- Δh_eff = k · Δh
+```text
+v = exp(a + b·φ_eff + c·θ_eff + d·θ_eff²)
+```
+
+### Tobler Hiking Function
+
+```text
+v = 6 · exp(-3.5 · |s_eff + 0.05|)
+```
+
+### Naismith Rule
+
+```text
+v = 5 · d / (d + 8.333 · max(0, Δh_eff))
+```
+
+## Slope Multiplier
+
+Semua model menggunakan faktor pengali kemiringan untuk menskalakan efek medan.
+
+```text
+θ_eff = arctan(k · tan(θ))
+s_eff = k · s
+Δh_eff = k · Δh
+```
+
+Keterangan:
+
+* `k` = `slope_multiplier`
+* `θ` = sudut kemiringan asli (radian)
+* `s` = grade/slope asli
+* `Δh` = perubahan elevasi asli
 
 ## Tech Stack
 
-- Python 3 + Flask
-- NetworkX (graf + Dijkstra)
-- Flasgger (Swagger/OpenAPI)
-- Rasterio (DEMNAS DEM)
-- GeoPandas (GeoJSON roads)
-- SciPy KDTree (nearest-node lookup)
+* Python 3 + Flask
+* NetworkX (Graph + Dijkstra)
+* Flasgger (Swagger/OpenAPI)
+* Rasterio (DEMNAS DEM)
+* GeoPandas (GeoJSON Roads)
+* SciPy KDTree (Nearest-Node Lookup)
 
 ## Quick Start
 
@@ -45,18 +81,22 @@ chmod +x setup.sh run.sh
 ./run.sh
 ```
 
-Swagger UI: [http://localhost:5000/apidocs](http://localhost:5000/apidocs)
+Swagger UI:
+
+```text
+http://localhost:5000/apidocs
+```
 
 ## API Endpoints
 
-| Method | Path | Description |
-|--------|------|-------------|
-| `POST` | `/api/route` | Cari rute optimal berdasarkan waktu tempuh atau jarak terpendek |
-| `GET` | `/api/nearest-node` | Cari node graf terdekat |
-| `GET` | `/api/graph-info` | Statistik graf |
-| `GET` | `/health` | Health check |
+| Method | Path                | Description                                                     |
+| ------ | ------------------- | --------------------------------------------------------------- |
+| `POST` | `/api/route`        | Cari rute optimal berdasarkan waktu tempuh atau jarak terpendek |
+| `GET`  | `/api/nearest-node` | Cari node graf terdekat                                         |
+| `GET`  | `/api/graph-info`   | Statistik graf                                                  |
+| `GET`  | `/health`           | Health check                                                    |
 
-### Contoh Request: Find Route
+## Contoh Request: Find Route
 
 ```bash
 curl -X POST http://localhost:5000/api/route \
@@ -71,44 +111,70 @@ curl -X POST http://localhost:5000/api/route \
   }'
 ```
 
-#### Parameter
+## Parameter
 
-| Parameter | Type | Default | Deskripsi |
-|-----------|------|---------|-----------|
-| `start` | `[lat, lon]` | *required* | Koordinat awal |
-| `end` | `[lat, lon]` | *required* | Koordinat tujuan |
-| `mode` | `string` | `"time"` | `"time"` (waktu tempuh) atau `"distance"` (jarak terpendek) |
-| `model` | `string` | `"glm"` | Model kecepatan: `"glm"`, `"tobler"`, atau `"naismith"` |
-| `slope_multiplier` | `float` | `3.0` | Skalar kemiringan untuk simulasi beban/mendorong |
-| `ignore_downhill` | `bool` | `false` | Abaikan aturan kecepatan turun konstan 5 km/h |
-| `lambda` | `float` | `null` | Backward compatibility — jika diisi > 0, dijadikan `slope_multiplier` |
+| Parameter          | Type         | Default    | Deskripsi                                                                     |
+| ------------------ | ------------ | ---------- | ----------------------------------------------------------------------------- |
+| `start`            | `[lat, lon]` | *required* | Koordinat awal                                                                |
+| `end`              | `[lat, lon]` | *required* | Koordinat tujuan                                                              |
+| `mode`             | `string`     | `"time"`   | `"time"` untuk waktu tempuh atau `"distance"` untuk jarak terpendek           |
+| `model`            | `string`     | `"glm"`    | Model kecepatan: `"glm"`, `"tobler"`, atau `"naismith"`                       |
+| `slope_multiplier` | `float`      | `3.0`      | Faktor pengali kemiringan                                                     |
+| `ignore_downhill`  | `bool`       | `false`    | Abaikan aturan kecepatan turun konstan 5 km/jam                               |
+| `lambda`           | `float`      | `null`     | Backward compatibility. Jika > 0 akan diperlakukan sebagai `slope_multiplier` |
 
-#### Response
+## Response
 
-Response sekarang menyertakan `travel_time` (detik), `slope_characteristics` (statistik kemiringan), dan parameter yang digunakan.
+Response menyertakan:
 
-### Backward Compatibility
+* `travel_time` (detik)
+* `slope_characteristics` (statistik kemiringan rute)
+* Parameter model yang digunakan
+* Informasi rute dan node
 
-Parameter `lambda` lama masih diterima. Jika `lambda > 0`, nilainya digunakan sebagai `slope_multiplier`. Jika tidak ada parameter baru yang dikirim, default adalah mode `"time"` dengan model `"glm"`.
+## Backward Compatibility
+
+Parameter `lambda` lama masih diterima.
+
+Jika:
+
+```text
+lambda > 0
+```
+
+maka nilainya akan digunakan sebagai:
+
+```text
+slope_multiplier = lambda
+```
+
+Jika tidak ada parameter baru yang dikirim, sistem menggunakan konfigurasi default:
+
+```text
+mode = "time"
+model = "glm"
+slope_multiplier = 3.0
+```
 
 ## Project Structure
 
-```
+```text
 ├── app.py                  # Flask app entry point + Swagger docs
 ├── config.py               # Configuration
 ├── requirements.txt        # Dependencies
-├── setup.sh / run.sh       # Scripts
+├── setup.sh
+├── run.sh
 ├── test_routing.py         # Tests
 ├── data/                   # GeoJSON, DEM, graph
-├── preprocessing/          # Graph building pipeline
-│   ├── build_graph.py      # GeoJSON + DEM → graph.pkl (dengan road type & terrain slope)
-│   ├── elevation.py        # DEM elevation sampling + Horn's terrain slope
-│   └── slope.py            # Haversine + walking slope calc
-├── core/                   # Routing logic
+├── preprocessing/
+│   ├── build_graph.py      # GeoJSON + DEM → graph.pkl
+│   ├── elevation.py        # DEM elevation sampling + Horn terrain slope
+│   └── slope.py            # Haversine + slope calculation
+├── core/
 │   ├── graph_loader.py     # Load/cache graph
-│   ├── cost.py             # Velocity models (GLM, Tobler, Naismith) + travel time cost
-│   └── routing.py          # Dijkstra + KDTree + slope characteristics
-└── api/                    # REST API
+│   ├── cost.py             # Velocity models + travel time cost
+│   └── routing.py          # Dijkstra + KDTree + slope statistics
+└── api/
     ├── routes.py           # Endpoints + Swagger docs
-    └── schemas.py          # Pydantic validation (mode, model, slope_multiplier, dll.)
+    └── schemas.py          # Request validation
 ```
